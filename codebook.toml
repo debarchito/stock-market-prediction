@@ -1,0 +1,15 @@
+words = [
+  "isort",
+  "jax",
+  "marimo",
+  "nixfmt",
+  "numtide",
+  "optax",
+  "polars",
+  "pyarrow",
+  "seaborn",
+  "stdenv",
+  "taplo",
+  "treefmt",
+  "venv",
+]
