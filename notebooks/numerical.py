@@ -58,6 +58,7 @@ def _(np, pl):
     mean = data.mean(axis=0)
     std = data.std(axis=0)
     data = (data - mean) / std
+
     return data, mean, std
 
 
@@ -98,44 +99,99 @@ def _(np):
 
 @app.cell
 def _(mo):
-    mo.md(r"""## 4. Define the LSTM Cell and Parameter Initialization""")
+    mo.md(
+        r"""## 4. Define step function and parameter initialization for the LSTM model."""
+    )
     return
 
 
 @app.cell
 def _(nn, np, random):
-    def lstm_step(params, carry, x):
+    def lstm_step(
+        params: tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+        ],
+        carry: tuple[np.ndarray, np.ndarray],
+        x: np.ndarray,
+    ) -> tuple[tuple[np.ndarray, np.ndarray], np.ndarray]:
+        """
+        Perform a single LSTM step.
+
+        Parameters:
+            params (tuple): LSTM parameters (Wf, Wi, Wc, Wo, bf, bi, bc, bo).
+            carry (tuple): Previous hidden state (h) and cell state (c).
+            x (np.ndarray): Input at the current time step.
+
+        Returns:
+            tuple: Updated carry (h, c) and the new hidden state h.
+        """
         h, c = carry
         Wf, Wi, Wc, Wo, bf, bi, bc, bo = params
+
         concat = np.concatenate([h, x])
+
         f = nn.sigmoid(Wf @ concat + bf)
         i = nn.sigmoid(Wi @ concat + bi)
         o = nn.sigmoid(Wo @ concat + bo)
+
         g = np.tanh(Wc @ concat + bc)
         c = f * c + i * g
         h = o * np.tanh(c)
+
         return (h, c), h
 
-    def init_lstm_params(key, input_dim, hidden_dim):
+    def lstm_params_init(
+        key: int, input_dim: int, hidden_dim: int
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        """
+        Initialize LSTM weights and biases.
+
+        Parameters:
+            keys: Random seed
+            input_dim: Size of input vector
+            hidden_dim: Size of hidden state
+
+        Returns:
+            tuple of weights and biases for each gate
+        """
         k = input_dim + hidden_dim
-
-        def init_gate():
-            return random.normal(key, (hidden_dim, k)) * 0.1
-
-        def init_bias():
-            return np.zeros((hidden_dim,))
+        [k1, k2, k3, k4] = random.split(key, 4)
 
         return (
-            init_gate(),
-            init_gate(),
-            init_gate(),
-            init_gate(),
-            init_bias(),
-            init_bias(),
-            init_bias(),
-            init_bias(),
+            random.normal(k1, (hidden_dim, k)) * 0.1,
+            random.normal(k2, (hidden_dim, k)) * 0.1,
+            random.normal(k3, (hidden_dim, k)) * 0.1,
+            random.normal(k4, (hidden_dim, k)) * 0.1,
+            np.zeros((hidden_dim,)),
+            np.zeros((hidden_dim,)),
+            np.zeros((hidden_dim,)),
+            np.zeros((hidden_dim,)),
         )
 
+    return lstm_params_init, lstm_step
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""## 5. Define forward pass, prediction, loss function for LSTM model and train."""
+    )
     return
 
 
@@ -144,8 +200,9 @@ def _(
     create_sequences,
     data,
     jax,
+    lstm_params_init,
+    lstm_step,
     mean,
-    nn,
     np,
     optax,
     pl,
@@ -155,75 +212,125 @@ def _(
     std,
     value_and_grad,
 ):
-    seq_len = 20
-    X, y = create_sequences(data, seq_len)
+    def forward(
+        params: tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+        ],
+        x: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Run the LSTM forward over a sequence of inputs.
+
+        Parameters:
+            params: tuple of LSTM parameters (weights and biases).
+            x: Input sequence, shape (seq_len, input_dim).
+
+        Returns:
+            The final hidden state after processing the sequence, shape (hidden_dim,).
+        """
+        carry = (np.zeros(hidden_dim), np.zeros(hidden_dim))
+        _, h_states = jax.lax.scan(
+            lambda carry, x: lstm_step(params, carry, x), carry, x
+        )
+
+        return h_states[-1]
+
+    def predict(
+        params: tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+        ],
+        out_w: np.ndarray,
+        out_b: np.ndarray,
+        x: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Predict the output for a given input sequence using the LSTM and output layer.
+
+        Parameters:
+            params: LSTM parameters.
+            out_w: Output layer weight matrix.
+            out_b: Output layer bias vector.
+            x: Input sequence, shape (seq_len, input_dim).
+
+        Returns:
+            Predicted output vector.
+        """
+        return out_w @ forward(params, x) + out_b
+
+    def loss_fn(
+        model: tuple[
+            tuple[
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+            ],
+            np.ndarray,
+            np.ndarray,
+        ],
+        X: np.ndarray,
+        y: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Compute mean squared error loss over a batch of input-output pairs.
+
+        Parameters:
+            model: tuple containing (LSTM params, output weights, output bias).
+            X: Batch of input sequences, shape (batch_size, seq_len, input_dim).
+            y: True target values, shape (batch_size,).
+
+        Returns:
+            Scalar mean squared error loss.
+        """
+        params, w, b = model
+        preds = jax.vmap(lambda x: predict(params, w, b, x))(X)
+
+        return np.mean((preds.squeeze() - y) ** 2)
+
+    # Train
+
+    key = random.PRNGKey(0)
+
+    X, y = create_sequences(data)
     input_dim = X.shape[-1]
     hidden_dim = 64
     output_dim = 1
 
-    def lstm_step(params, carry, x):
-        h, c = carry
-        Wf, Wi, Wc, Wo, bf, bi, bc, bo = params
-        concat = np.concatenate([h, x])
-        f = nn.sigmoid(Wf @ concat + bf)
-        i = nn.sigmoid(Wi @ concat + bi)
-        o = nn.sigmoid(Wo @ concat + bo)
-        g = np.tanh(Wc @ concat + bc)
-        c = f * c + i * g
-        h = o * np.tanh(c)
-        return (h, c), h
+    params = lstm_params_init(key, input_dim, hidden_dim)
 
-    def init_lstm_params(key, input_dim, hidden_dim):
-        k = input_dim + hidden_dim
-
-        def init_gate():
-            return random.normal(key, (hidden_dim, k)) * 0.1
-
-        def init_bias():
-            return np.zeros((hidden_dim,))
-
-        return (
-            init_gate(),
-            init_gate(),
-            init_gate(),
-            init_gate(),
-            init_bias(),
-            init_bias(),
-            init_bias(),
-            init_bias(),
-        )
-
-    def forward(params, x):
-        h = np.zeros(hidden_dim)
-        c = np.zeros(hidden_dim)
-        carry = (h, c)
-        _, h_states = jax.lax.scan(
-            lambda carry, x: lstm_step(params, carry, x), carry, x
-        )
-        return h_states[-1]
-
-    def predict(params, out_w, out_b, x):
-        h = forward(params, x)
-        return out_w @ h + out_b
-
-    def loss_fn(model, X, y):
-        params, w, b = model
-        preds = jax.vmap(lambda x: predict(params, w, b, x))(X)
-        return np.mean((preds.squeeze() - y) ** 2)
-
-    key = random.PRNGKey(0)
-    params = init_lstm_params(key, input_dim, hidden_dim)
     out_w = random.normal(key, (output_dim, hidden_dim)) * 0.1
     out_b = np.zeros((output_dim,))
+
     model = (params, out_w, out_b)
 
     optimizer = optax.adam(1e-3)
     opt_state = optimizer.init(model)
 
-    for epoch in range(250):
+    gen = 251
+
+    for epoch in range(gen):
         loss, grads = value_and_grad(loss_fn)(model, X, y)
         updates, opt_state = optimizer.update(grads, opt_state)
         model = optax.apply_updates(model, updates)
+
         if epoch % 10 == 0:
             print(f"Epoch {epoch} | Loss: {loss:.4f}")
 
@@ -235,9 +342,9 @@ def _(
     plot = (
         pl.DataFrame(
             {
-                "Index": list(range(250)),
-                "Predicted": preds_real[-250:].tolist(),
-                "Actual": actual_real[-250:].tolist(),
+                "Index": list(range(gen)),
+                "Predicted": preds_real[-gen:].tolist(),
+                "Actual": actual_real[-gen:].tolist(),
             }
         )
         .unpivot(

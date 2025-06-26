@@ -28,11 +28,12 @@
           "/run/opengl-driver"
         ];
         venvDir = ".venv";
-        packages = with pkgs; [
-          python313
-          python313Packages.venvShellHook
-          ty
-          uv
+        packages = [
+          pkgs.nodejs-slim
+          pkgs.python313
+          pkgs.python313Packages.venvShellHook
+          pkgs.ty
+          pkgs.uv
         ];
       };
     };
