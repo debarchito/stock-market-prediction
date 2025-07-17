@@ -1,3 +1,5 @@
+> NOTE: macOS and non-CUDA systems are not supported.
+
 ## 1. Setup (direnv + NixOS)
 
 If you have [direnv](https://direnv.net) (only supported in
