@@ -1,3 +1,5 @@
+# NOTE: THIS FLAKE ASSUMES YOU ARE RUNNING NIXOS!
+# Although, I do have plans to make it generic in the future.
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -30,6 +32,7 @@
         venvDir = ".venv";
         packages = [
           pkgs.nodejs-slim
+          pkgs.pyright
           pkgs.python313
           pkgs.python313Packages.venvShellHook
           pkgs.ty
