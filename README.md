@@ -29,7 +29,7 @@ Now, scaffold the project dependencies using:
 # Install Python 3.13.* required for this project
 uv python install 3.13
 # Active the virtual environment
-uv venv
+uv venv --python 3.13
 # Sync the dependencies
 uv sync --active
 ```
