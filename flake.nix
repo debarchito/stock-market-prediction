@@ -31,11 +31,10 @@
         ];
         venvDir = ".venv";
         packages = [
-          pkgs.nodejs-slim
+          pkgs.nodejs-slim_24
           pkgs.pyright
           pkgs.python313
           pkgs.python313Packages.venvShellHook
-          pkgs.ty
           pkgs.uv
         ];
       };

@@ -9,7 +9,7 @@ dependencies using:
 ```sh
 direnv allow
 # Sync the dependencies
-uv sync
+uv sync --active
 ```
 
 ## 2. Setup (standard)
@@ -31,7 +31,7 @@ uv python install 3.13
 # Active the virtual environment
 uv venv
 # Sync the dependencies
-uv sync
+uv sync --active
 ```
 
 ## 3. Run notebooks

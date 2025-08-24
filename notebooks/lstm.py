@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.14.13"
+__generated_with = "0.15.0"
 app = marimo.App(width="medium")
 
 
@@ -99,7 +99,9 @@ def _(np):
 
 @app.cell
 def _(mo):
-    mo.md(r"""## 4. Define step function and parameter initialization for the LSTM model.""")
+    mo.md(
+        r"""## 4. Define step function and parameter initialization for the LSTM model."""
+    )
     return
 
 
@@ -187,7 +189,9 @@ def _(nn, np, random):
 
 @app.cell
 def _(mo):
-    mo.md(r"""## 5. Define forward pass, prediction, loss function for LSTM model and train.""")
+    mo.md(
+        r"""## 5. Define forward pass, prediction, loss function for LSTM model and train."""
+    )
     return
 
 
