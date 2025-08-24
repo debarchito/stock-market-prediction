@@ -12,17 +12,38 @@ def _(mo):
 
 @app.cell
 def _():
+    import glob
+    import os
+    from datetime import datetime
+
     import jax
+    import joblib
     import marimo as mo
     import matplotlib.pyplot as plt
     import optax
     import polars as pl
     import seaborn as sns
-    from jax import nn
+    from jax import jit, nn
     from jax import numpy as np
     from jax import random, value_and_grad
 
-    return jax, mo, nn, np, optax, pl, plt, random, sns, value_and_grad
+    return (
+        datetime,
+        glob,
+        jax,
+        jit,
+        joblib,
+        mo,
+        nn,
+        np,
+        optax,
+        os,
+        pl,
+        plt,
+        random,
+        sns,
+        value_and_grad,
+    )
 
 
 @app.cell
@@ -199,7 +220,10 @@ def _(mo):
 def _(
     create_sequences,
     data,
+    datetime,
     jax,
+    jit,
+    joblib,
     lstm_params_init,
     lstm_step,
     mean,
@@ -235,6 +259,7 @@ def _(
         Returns:
             The final hidden state after processing the sequence, shape (hidden_dim,).
         """
+        hidden_dim = params[0].shape[0]
         carry = (np.zeros(hidden_dim), np.zeros(hidden_dim))
         _, h_states = jax.lax.scan(
             lambda carry, x: lstm_step(params, carry, x), carry, x
@@ -307,63 +332,244 @@ def _(
 
     # Train
 
-    key = random.PRNGKey(0)
+    def get_batches(key, X, y, batch_size):
+        """
+        Generate mini-batches of inputs and targets for training.
+
+        Parameters:
+            X (np.ndarray): Input data, shape (num_samples, seq_len, input_dim).
+            y (np.ndarray): Target data, shape (num_samples,).
+            batch_size (int): Number of samples per batch.
+
+        Yields:
+            Tuple[np.ndarray, np.ndarray]: Tuple of (X_batch, y_batch), where:
+                - X_batch has shape (batch_size, seq_len, input_dim)
+                - y_batch has shape (batch_size,)
+
+        Notes:
+            Data is shuffled at the start of each epoch.
+            The last few samples are dropped if they don't fit into a full batch.
+        """
+        indices = random.permutation(key, len(X))
+        for start_idx in range(0, len(X) - batch_size + 1, batch_size):
+            batch_idx = indices[start_idx : start_idx + batch_size]
+            yield X[batch_idx], y[batch_idx]
+
+    @jit
+    def train_step(model, X_batch, y_batch, opt_state):
+        loss, grads = value_and_grad(loss_fn)(model, X_batch, y_batch)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        model = optax.apply_updates(model, updates)
+        return model, opt_state, loss
+
+    seed = 42
+    key = random.PRNGKey(seed)
+    key, shuffle_key, lstm_key, out_key = random.split(key, 4)
 
     X, y = create_sequences(data)
+
+    split_ratio = 0.8
+    num_samples = len(X)
+    split_index = int(num_samples * split_ratio)
+
+    indices = random.permutation(shuffle_key, num_samples)
+    X_shuffled = X[indices]
+    y_shuffled = y[indices]
+
+    X_train, y_train = X_shuffled[:split_index], y_shuffled[:split_index]
+    X_test, y_test = X_shuffled[split_index:], y_shuffled[split_index:]
+
     input_dim = X.shape[-1]
     hidden_dim = 64
     output_dim = 1
 
-    params = lstm_params_init(key, input_dim, hidden_dim)
-
-    out_w = random.normal(key, (output_dim, hidden_dim)) * 0.1
+    params = lstm_params_init(lstm_key, input_dim, hidden_dim)
+    out_w = random.normal(out_key, (output_dim, hidden_dim)) * 0.1
     out_b = np.zeros((output_dim,))
 
     model = (params, out_w, out_b)
-
     optimizer = optax.adam(1e-3)
     opt_state = optimizer.init(model)
 
-    gen = 251
+    gen = 5_000
+    batch_size = 128
 
     for epoch in range(gen):
-        loss, grads = value_and_grad(loss_fn)(model, X, y)
-        updates, opt_state = optimizer.update(grads, opt_state)
-        model = optax.apply_updates(model, updates)
+        key, subkey = random.split(key)
+        epoch_losses = []
+
+        for X_batch, y_batch in get_batches(subkey, X_train, y_train, batch_size):
+            model, opt_state, loss = train_step(model, X_batch, y_batch, opt_state)
+            epoch_losses.append(loss)
 
         if epoch % 10 == 0:
-            print(f"Epoch {epoch} | Loss: {loss:.4f}")
+            print(f"Epoch {epoch} | Loss: {np.mean(np.array(epoch_losses)):.4f}")
+
+    # Save the model
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_name = f"lstm_model_{timestamp}.joblib"
+    joblib.dump(
+        {
+            "model": model,
+            "opt_state": opt_state,
+            "seed": seed,
+            "mean": mean,
+            "std": std,
+        },
+        model_name,
+    )
+    print(f"Saving model as: {model_name}")
+
+    # Test
 
     params, out_w, out_b = model
-    preds = jax.vmap(lambda x: predict(params, out_w, out_b, x))(X).squeeze()
+    preds = jax.vmap(lambda x: predict(params, out_w, out_b, x))(X_test).squeeze()
     preds_real = preds * std[3] + mean[3]
-    actual_real = y * std[3] + mean[3]
+    actual_real = y_test * std[3] + mean[3]
 
-    plot = (
-        pl.DataFrame(
-            {
-                "Index": list(range(gen)),
-                "Predicted": preds_real[-gen:].tolist(),
-                "Actual": actual_real[-gen:].tolist(),
-            }
-        )
-        .unpivot(
-            index="Index",
-            on=["Predicted", "Actual"],
-            variable_name="Type",
-            value_name="Price",
-        )
-        .to_pandas()
+    # Plot
+
+    df = pl.DataFrame(
+        {
+            "Index": list(range(len(X_test))),
+            "Predicted": preds_real.tolist(),
+            "Actual": actual_real.tolist(),
+        }
+    ).to_pandas()
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+
+    sns.lineplot(ax=axes[0], data=df, x="Index", y="Predicted", color="blue")
+    axes[0].set_title("Predicted Close Price")
+    axes[0].set_xlabel("Time Step")
+    axes[0].set_ylabel("Close Price")
+    axes[0].grid(True)
+
+    sns.lineplot(ax=axes[1], data=df, x="Index", y="Actual", color="orange")
+    axes[1].set_title("Actual Close Price")
+    axes[1].set_xlabel("Time Step")
+    axes[1].grid(True)
+
+    sns.lineplot(
+        ax=axes[2], data=df, x="Index", y="Predicted", label="Predicted", color="blue"
     )
+    sns.lineplot(
+        ax=axes[2], data=df, x="Index", y="Actual", label="Actual", color="orange"
+    )
+    axes[2].set_title("Predicted vs Actual")
+    axes[2].set_xlabel("Time Step")
+    axes[2].grid(True)
+    axes[2].legend()
 
-    plt.figure(figsize=(12, 6))
-    sns.lineplot(data=plot, x="Index", y="Price", hue="Type")
-    plt.title("LSTM Prediction vs Actual")
-    plt.xlabel("Time Step")
-    plt.ylabel("Close Price")
-    plt.grid(True)
     plt.tight_layout()
     plt.show()
+    return predict, split_ratio
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""## 6. Load the latest model and test.""")
+    return
+
+
+@app.cell
+def _(
+    create_sequences,
+    data,
+    glob,
+    jax,
+    joblib,
+    os,
+    pl,
+    plt,
+    predict,
+    sns,
+    split_ratio,
+):
+    joblib_files_ts = glob.glob("lstm_model_*.joblib")
+    if not joblib_files_ts:
+        raise FileNotFoundError("No saved joblib models found.")
+
+    latest_file_ts = sorted(joblib_files_ts, key=os.path.getmtime)[-1]
+    print(f"Loading model from: {latest_file_ts}")
+
+    checkpoint_ts = joblib.load(latest_file_ts)
+
+    model_ts = checkpoint_ts["model"]
+    checkpoint_ts["opt_state"]
+    mean_ts = checkpoint_ts["mean"]
+    std_ts = checkpoint_ts["std"]
+    seed_ts = checkpoint_ts["seed"]
+
+    # Test
+
+    X_ts, y_ts = create_sequences(data)
+
+    key_ts = jax.random.PRNGKey(seed_ts)
+    key_ts, shuffle_key_ts = jax.random.split(key_ts)
+
+    num_samples_ts = len(X_ts)
+    split_index_ts = int(split_ratio * num_samples_ts)
+
+    indices_ts = jax.random.permutation(shuffle_key_ts, num_samples_ts)
+    X_ts = X_ts[indices_ts]
+    y_ts = y_ts[indices_ts]
+
+    X_test_ts = X_ts[split_index_ts:]
+    y_test_ts = y_ts[split_index_ts:]
+
+    # Prediction
+
+    params_ts, out_w_ts, out_b_ts = model_ts
+    preds_ts = jax.vmap(lambda x: predict(params_ts, out_w_ts, out_b_ts, x))(
+        X_test_ts
+    ).squeeze()
+    preds_real_ts = preds_ts * std_ts[3] + mean_ts[3]
+    actual_real_ts = y_test_ts * std_ts[3] + mean_ts[3]
+
+    # Plot
+
+    df_ts = pl.DataFrame(
+        {
+            "Index": list(range(len(X_test_ts))),
+            "Predicted": preds_real_ts.tolist(),
+            "Actual": actual_real_ts.tolist(),
+        }
+    ).to_pandas()
+
+    fig_ts, axes_ts = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+
+    sns.lineplot(ax=axes_ts[0], data=df_ts, x="Index", y="Predicted", color="blue")
+    axes_ts[0].set_title("Predicted Close Price")
+    axes_ts[0].set_xlabel("Time Step")
+    axes_ts[0].set_ylabel("Close Price")
+    axes_ts[0].grid(True)
+
+    sns.lineplot(ax=axes_ts[1], data=df_ts, x="Index", y="Actual", color="orange")
+    axes_ts[1].set_title("Actual Close Price")
+    axes_ts[1].set_xlabel("Time Step")
+    axes_ts[1].grid(True)
+
+    sns.lineplot(
+        ax=axes_ts[2],
+        data=df_ts,
+        x="Index",
+        y="Predicted",
+        label="Predicted",
+        color="blue",
+    )
+    sns.lineplot(
+        ax=axes_ts[2], data=df_ts, x="Index", y="Actual", label="Actual", color="orange"
+    )
+    axes_ts[2].set_title("Predicted vs Actual")
+    axes_ts[2].set_xlabel("Time Step")
+    axes_ts[2].grid(True)
+    axes_ts[2].legend()
+
+    plt.tight_layout()
+    plt.show()
+
     return
 
 
